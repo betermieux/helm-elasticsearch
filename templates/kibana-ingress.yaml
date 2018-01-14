@@ -21,7 +21,8 @@ spec:
     - host: {{ $host }}
       http:
         paths:
-          - backend:
+          - path: "/kibana"
+            backend:
               serviceName: {{ $serviceName }}
               servicePort: {{ $servicePort }}
     {{- end -}}

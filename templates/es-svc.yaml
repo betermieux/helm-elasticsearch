@@ -8,12 +8,12 @@ metadata:
     release: "{{ .Release.Name }}"
     heritage: "{{ .Release.Service }}"
     component: {{ template "fullname" . }}
-    role: client
+    role: data
 spec:
   type: {{ .Values.common.serviceType }}
   selector:
     component: {{ template "fullname" . }}
-    role: client
+    role: data
   ports:
   - name: http
     port: {{ .Values.service.httpPort }}

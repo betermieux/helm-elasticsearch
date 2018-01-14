@@ -1,7 +1,7 @@
 image:
   es:
     repository: quay.io/pires/docker-elasticsearch-kubernetes
-    tag: 6.0.0
+    tag: 6.1.1
     pullPolicy: Always
   init:
     repository: busybox
@@ -11,14 +11,19 @@ image:
     repository: bobrik/curator
     tag: latest
     pullPolicy: IfNotPresent
+  exporter:
+    repository: justwatch/elasticsearch_exporter
+    tag: latest
+    pullPolicy: IfNotPresent
+
 
 common:
   # Defines the service type for all outward-facing (non-discovery) services.
   # For minikube use NodePort otherwise use LoadBalancer
-  serviceType: LoadBalancer
+  serviceType: ClusterIP
 
   env:
-    CLUSTER_NAME: "myesdb"
+    CLUSTER_NAME: "elasticsearch"
 
     # Uncomment this if you get the "No up-and-running site-local (private)
     # addresses" error.
@@ -27,29 +32,31 @@ common:
   # If enabled, then the data and master nodes will be StatefulSets with
   # associated persistent volume claims.
   stateful:
-    enabled: false
+    enabled: true
 
     # The PVC storage class that backs the persistent volume claims. On AWS
     # "gp2" would be appropriate.
-    class: "standard"
+    class: "ceph-rbd"
 
 # Client/ingest nodes can execute pre-processing pipelines, composed of
 # one or more ingest processors. Depending on the type of operations performed
 # by the ingest processors and the required resources, it may make sense to
-# have dedicated ingest nodes, that will only perform this specific task.  
+# have dedicated ingest nodes, that will only perform this specific task.
 client:
   # It isn't common to need more than 2 client nodes.
-  replicas: 2
+  replicas: 0
   antiAffinity: "soft"
 
   # The amount of RAM allocated to the JVM heap. This should be set to the
   # same value as client.resources.requests.memory, or you may see
   # OutOfMemoryErrors on startup.
-  heapMemory: 256m
+  heapMemory: 512m
 
   resources:
+    limits:
+      memory: 1024Mi
     requests:
-      memory: 256Mi
+      memory: 512Mi
 
   env:
     NODE_DATA: "false"
@@ -58,11 +65,11 @@ client:
     HTTP_ENABLE: "true"
 
 # Data nodes hold the shards that contain the documents you have indexed. Data
-# nodes handle data related operations like CRUD, search, and aggregations. 
-# These operations are I/O-, memory-, and CPU-intensive. It is important to 
+# nodes handle data related operations like CRUD, search, and aggregations.
+# These operations are I/O-, memory-, and CPU-intensive. It is important to
 # monitor these resources and to add more data nodes if they are overloaded.
 #
-# The main benefit of having dedicated data nodes is the separation of the 
+# The main benefit of having dedicated data nodes is the separation of the
 # master and data roles.
 data:
   # This count will depend on your data and computation needs.
@@ -72,17 +79,19 @@ data:
   # The amount of RAM allocated to the JVM heap. This should be set to the
   # same value as data.esources.requests.memory, or you may see
   # OutOfMemoryErrors on startup.
-  heapMemory: 256m
+  heapMemory: 1024m
 
   resources:
+    limits:
+      memory: 1536Mi
     requests:
-      memory: 256Mi
+      memory: 1024Mi
 
   env:
     NODE_DATA: "true"
     NODE_MASTER: "false"
-    NODE_INGEST: "false"
-    HTTP_ENABLE: "false"
+    NODE_INGEST: "true"
+    HTTP_ENABLE: "true"
 
   # Determines the properties of the persistent volume claim associated with a
   # data node StatefulSet that is created when the common.stateful.enabled
@@ -90,23 +99,25 @@ data:
   stateful:
     # This is a default value, and will not be sufficient in a production
     # system. You'll probably want to increase it.
-    size: 12Gi
+    size: 15Gi
 
 # The master node is responsible for lightweight cluster-wide actions such as
-# creating or deleting an index, tracking which nodes are part of the 
-# cluster, and deciding which shards to allocate to which nodes. It is 
+# creating or deleting an index, tracking which nodes are part of the
+# cluster, and deciding which shards to allocate to which nodes. It is
 # important for cluster health to have a stable master node.
 master:
   # Master replica count should be (#clients / 2) + 1, and generally at least 3.
   replicas: 3
   antiAffinity: "soft"
-  
+
   # The amount of RAM allocated to the JVM heap. This should be set to the
   # same value as master.resources.requests.memory, or you may see
   # OutOfMemoryErrors on startup.
   heapMemory: 256m
 
   resources:
+    limits:
+      memory: 512Mi
     requests:
       memory: 256Mi
 
@@ -115,7 +126,7 @@ master:
     NODE_MASTER: "true"
     NODE_INGEST: "false"
     HTTP_ENABLE: "false"
-    
+
     # The default value for this environment variable is 2, meaning a cluster
     # will need a minimum of 2 master nodes to operate. If you have 3 masters
     # and one dies, the cluster still works.
@@ -127,7 +138,7 @@ master:
   stateful:
     # This is a default value, and will not be sufficient in a production
     # system. You'll probably want to increase it.
-    size: 2Gi  
+    size: 256Mi
 
 curator:
   enabled: true
@@ -139,7 +150,10 @@ curator:
   age:
     timestring: "%Y.%m.%d"
     unit: "days"
-    unit_count: 3
+    unit_count: 7
+
+exporter:
+  enabled: true
 
 service:
   httpPort: 9200
@@ -150,30 +164,49 @@ kibana:
   replicas: 1
   image:
     repository: docker.elastic.co/kibana/kibana-oss
-    tag: 6.0.0
+    tag: 6.1.1
     pullPolicy: Always
   httpPort: 80
   resources:
     limits:
       cpu: 1000m
+      memory: 512Mi
     requests:
       cpu: 100m
+      memory: 256Mi
+
   env:
+    SERVER_BASEPATH: /kibana
     # XPACK_GRAPH_ENABLED: "false"
     # XPACK_ML_ENABLED: "false"
     # XPACK_REPORTING_ENABLED: "false"
     # XPACK_SECURITY_ENABLED: "false"
   ingress:
-    enabled: false
+    enabled: true
     # Used to create an Ingress record.
     hosts:
-      # - kibana.local
+    - kube.betermieux.de
     annotations:
-      # kubernetes.io/ingress.class: nginx
-      # kubernetes.io/tls-acme: "true"
-    tls:
+      kubernetes.io/ingress.class: nginx
+      ingress.kubernetes.io/rewrite-target: /
+      ingress.kubernetes.io/configuration-snippet: |
+        rewrite ^(/kibana)$ $1/ permanent;
+
+    # tls:
       # Secrets must be manually created in the namespace.
       # - secretName: kibana-tls
       #   hosts:
       #     - kibana.local
-      
+
+fluentd:
+  enabled: true
+  image:
+    repository: webtech.informatik.hs-furtwangen.de:9502/fluentd-elasticsearch
+    tag: v2.0.3
+    pullPolicy: Always
+  resources:
+    limits:
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 200Mi
